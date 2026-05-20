@@ -208,13 +208,20 @@ Response:
 The import-tool:
 1. Writes to `/root/src/9router-data/db/data.sqlite`
 2. Restarts 9Router
-3. Validates accounts:
-   - **Kiro**: zero-cost — OIDC token refresh + AWS quota query (no LLM tokens burned)
-   - **Codex**: lightweight LLM call — `cx/gpt-5.5` with `max_tokens=3` (~50 tokens/account)
-4. Returns results at `GET /import/api/status`
-5. On UPDATE of existing accounts, preserves 9Router's own `testStatus`/`backoffLevel`
+3. Validates each account via real LLM calls through 9Router (Kiro: kr/claude-haiku-4.5, Codex: cx/gpt-5.5, max_tokens=3, timeout=15s)
+4. On UPDATE, preserves 9Router's testStatus/backoffLevel
+5. Returns results at `GET /import/api/status`
 
-> **Pitfalls**: See `references/development-pitfalls.md` for bugs encountered and fixes applied.
+## Publishing
+
+```bash
+hermes skills Publish to GitHub to sync updated SKILL.md + new pitfalls reference. /path/to/skill --to github --repo chenkaihao/hermes-skills
+hermes skills install chenkaihao/hermes-skills/account-import --category automation --force
+```
+
+`--force` needed for false-positive security scan (cross-platform `sys.platform` check + UTF-8 BOM handler).
+
+See `references/development-pitfalls.md` for lessons learned building this skill.
 
 ## Provider-facing instructions
 
@@ -235,3 +242,34 @@ python import_accounts.py --input 你的文件.json --push
 ```
 
 三步：下载 → 准备文件 → 运行。出错了把输出发给我。
+
+
+## Survival Monitoring — 账号存活观测
+
+This skill also includes an automated survival monitor (`scripts/monitor_survival.py`) that runs every 6 hours via cron.
+
+### What it does
+
+1. Reads all active accounts from 9Router
+2. Validates each via real LLM call (same as import validation)
+3. Records alive/dead state with timestamps
+4. Generates HTML report at `/report/survival.html`
+
+### Report metrics
+
+- Total / alive / dead account counts
+- 7-day death rate (封号力度)
+- Median lifespan in days
+- Platform comparison (Kiro vs Codex)
+- Domain anti-ban ranking
+- Survival curve
+- Recent deaths with reasons
+- Longest surviving accounts
+
+### Manual run
+
+```bash
+python /root/.hermes/skills/automation/account-import/scripts/monitor_survival.py
+```
+
+Report: https://tokenfree.cc/report/survival.html
