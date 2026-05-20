@@ -8,7 +8,7 @@ from pathlib import Path
 DB = "/root/src/9router-data/db/data.sqlite"
 REPORT = "/var/www/html/report/survival.html"
 API = "http://localhost:9000/v1/chat/completions"
-TIMEOUT = 20
+TIMEOUT = 10
 CONCURRENCY = 3  # 并发验证数
 MODEL_MAP = {"codex": "cx/gpt-5.5", "kiro": "kr/claude-haiku-4.5"}
 
@@ -336,11 +336,11 @@ def main():
     now = datetime.now(timezone.utc)
     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
-    print(f"[{now_str}] 开始存活观测...")
+    print(f"[{now_str}] 开始存活观测...", flush=True)
 
     # 1. 加载账号
     accounts = load_accounts()
-    print(f"  加载 {len(accounts)} 个活跃账号")
+    print(f"  加载 {len(accounts)} 个活跃账号", flush=True)
 
     # 2. 逐一验证（并发 3）
     results = {}
@@ -357,7 +357,7 @@ def main():
                     alive, reason = False, "验证异常"
                 results[acc["email"]] = (alive, reason)
                 status = "✅" if alive else "❌"
-                print(f"  {status} {acc['email']:<40} {reason}")
+                print(f"  {status} {acc['email']:<40} {reason}", flush=True)
 
     # 3. 更新数据库
     lifespan = load_lifespan()
@@ -369,7 +369,7 @@ def main():
     # 4. 统计
     lifespan = load_lifespan()
     stats = compute_stats(lifespan, now_str)
-    print(f"\n  存活: {stats['alive']}  死亡: {stats['dead']}  中位寿命: {stats['median_lifespan_d']}d")
+    print(f"\n  存活: {stats['alive']}  死亡: {stats['dead']}  中位寿命: {stats['median_lifespan_d']}d", flush=True)
 
     # 5. 生成报表
     html = render_html(stats, now_str + " UTC")
