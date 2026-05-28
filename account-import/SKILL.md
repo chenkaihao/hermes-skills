@@ -10,9 +10,21 @@ category: automation
 
 Load this skill when:
 - Someone sends account data (file attachment, pasted JSON/CSV, text dump)
-- Someone says "帮我导入这些账号" / "here are some accounts"
+- Someone says "帮我导入这些账号" / "here are some accounts" / "导入账号" / "import account to 9Router"
 - Someone asks how to send accounts to us
 - You see a file named like `*export*.json`, `*accounts*.csv`, `*codex*.json`
+- You need to **directly insert** an account from any-auto-register into 9Router SQLite (server-side import)
+
+## Direct Server-Side Import (no web API)
+
+When ON the server and importing from any-auto-register → 9Router directly, the web import API may be unnecessary overhead. Instead:
+
+1. Read credentials from any-auto-register's `account_credentials` table
+2. Build a `providerConnections` entry matching existing Codex entries' format (see `account-registration` references for schema)
+3. `INSERT` into `/root/src/9router-data/db/data.sqlite` (check email first to avoid duplicates)
+4. Sync the entry to `db.json` backup
+5. `systemctl restart 9router`
+6. Run health check (see `account-registration` skill's `references/codex-health-check.md`)
 
 ## Core Principle
 
@@ -212,6 +224,10 @@ The import-tool:
 4. On UPDATE, preserves 9Router's testStatus/backoffLevel
 5. Returns results at `GET /import/api/status`
 
+> 🔥 **Git 追踪**：9Router 数据目录 `/root/src/9router-data` 应已初始化为 Git 仓库（含 `.gitignore` 排除 WAL/SHM/日志/备份）。每次导入后必须 `git diff --stat` 确认只改动了预期条目、`git commit` 记录变更。详见 `account-registration` 技能的 `references/git-tracking-9router-data.md`。
+>
+> **SQLite WAL 陷阱**：导入后 `git diff` 可能只显示 `db.json` 变更而 `data.sqlite` hash 不变——数据已写入，只是 WAL 尚未 checkpoint。通过 SQL 查询确认而非依赖 git diff 判定。
+
 ## Publishing
 
 ```bash
@@ -222,6 +238,7 @@ hermes skills install chenkaihao/hermes-skills/account-import --category automat
 `--force` needed for false-positive security scan (cross-platform `sys.platform` check + UTF-8 BOM handler).
 
 See `references/development-pitfalls.md` for lessons learned building this skill.
+See `references/survival-monitor-pitfalls.md` for cron timeout, token refresh, and death classification pitfalls.
 
 ## Provider-facing instructions
 
@@ -246,30 +263,83 @@ python import_accounts.py --input 你的文件.json --push
 
 ## Survival Monitoring — 账号存活观测
 
-This skill also includes an automated survival monitor (`scripts/monitor_survival.py`) that runs every 6 hours via cron.
+This skill includes an automated survival monitor (`scripts/monitor_survival.py`) running every 6 hours via cron (zero LLM cost, `no_agent=true`).
 
-### What it does
+### How it works
 
-1. Reads all active accounts from 9Router
-2. Validates each via real LLM call (same as import validation)
-3. Records alive/dead state with timestamps
-4. Generates HTML report at `/report/survival.html`
+1. Reads all active accounts from 9Router DB (`providerConnections` table)
+2. Validates each via real LLM call through 9Router (Codex: `cx/gpt-5.5`, Kiro: `kr/claude-haiku-4.5`, max_tokens=3)
+3. **On API failure, falls back to 9Router health data** — queries `providerConnections.testStatus` + `lastError` for accurate ban classification (prevents "超时" false positives when the real cause is 403 suspended)
+4. Records alive/dead state with timestamps in `account_lifespan` table
+5. Generates HTML report at `/var/www/html/report/survival.html`
 
-### Report metrics
+### Key parameters
 
-- Total / alive / dead account counts
-- 7-day death rate (封号力度)
-- Median lifespan in days
-- Platform comparison (Kiro vs Codex)
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| `TIMEOUT` | **25s** | 10s too aggressive; Kiro OIDC+Chat end-to-end needs 15-20s |
+| `CONCURRENCY` | 3 | Thread pool for parallel validation |
+| `API` | `http://localhost:3000/v1/chat/completions` | Via New API routing (Docker). Port 9000 is Next.js UI — `/v1/` returns 404 there. |
+
+### Report modules
+
+- Total / alive / dead counts + 7-day death rate + median lifespan
+- Platform comparison (Kiro vs Codex) with bar charts
 - Domain anti-ban ranking
-- Survival curve
-- Recent deaths with reasons
-- Longest surviving accounts
+- Survival curve (Kaplan-Meier style)
+- Recent deaths with color-coded reasons (封号=red, 超时=yellow)
+- Longest surviving accounts TOP10
 
 ### Manual run
 
 ```bash
+# Full check (validates all accounts → updates DB → generates HTML)
 python /root/.hermes/skills/automation/account-import/scripts/monitor_survival.py
+
+# Report-only mode (regenerate HTML from existing DB, no API calls)
+python /root/.hermes/skills/automation/account-import/scripts/monitor_survival.py --report-only
 ```
 
 Report: https://tokenfree.cc/report/survival.html
+
+### 9Router health fallback (critical)
+
+When chat API returns empty body or times out, the script queries 9Router's provider health:
+
+```sql
+SELECT json_extract(data, '$.testStatus'), json_extract(data, '$.lastError')
+FROM providerConnections WHERE email=?
+```
+
+If `testStatus == "unavailable"` with 403/suspended in `lastError`, classified as **封号** — not 超时. This prevents proxy-delay false positives from masquerading as real bans.
+
+### Cron
+
+⚠️ **CRITICAL: Agent mode required (not `no_agent`)**
+
+`no_agent=true` cron mode has a **120s hard timeout**. The survival monitor takes 8-10 minutes (99 accounts × 25s ÷ 3 concurrency). All `no_agent` runs silently fail with `Script timed out after 120s` — no error visible unless checking `/root/.hermes/cron/output/<job_id>/` files.
+
+**Correct setup**:
+```json
+{
+  "no_agent": false,      // ← must be false for long-running scripts
+  "enabled_toolsets": ["terminal"],
+  "prompt": "运行存活观测脚本：python3 -u /root/.hermes/skills/automation/account-import/scripts/monitor_survival.py。只需运行脚本，脚本会自己生成 HTML 报表。"
+}
+```
+
+Terminal timeout in agent mode is 600s — sufficient. Cost: ~1 LLM turn per run (negligible at ~500 tokens).
+
+Script must exist in `~/.hermes/scripts/` (cron requires flat directory, not skill path). Sync when updating:
+
+```bash
+cp /root/.hermes/skills/automation/account-import/scripts/monitor_survival.py /root/.hermes/scripts/
+```
+
+### Pitfalls discovered
+
+- **10s timeout → false die-off**: First runs showed 60 dead/39 alive. 25s doubled alive to 61.
+- **`load_lifespan()` missing columns**: Originally omitted `provider, domain` from SELECT — HTML showed empty platforms and "unknown" domains. Fixed by including both in the query.
+- **Kiro "超时" may be actual bans**: 9Router returns empty body for connections with 403 upstream. Without health fallback, these show as "Expecting value" instead of "封号".
+- **`no_agent` cron silently kills long scripts**: 120s hard timeout for script-only mode. All 4 scheduled runs failed silently. Switched to agent mode (600s terminal timeout). See `references/survival-monitor-pitfalls.md`.
+- **Codex refresh tokens are one-time-use**: OpenAI uses rotating RTs. Once consumed (by 9Router auto-refresh or any other process), permanent `refresh_token_reused` error. Recovery requires full OAuth re-authentication — token refresh impossible. See `references/survival-monitor-pitfalls.md`.

@@ -1,74 +1,95 @@
-# import-tool Development Pitfalls
+# Development Pitfalls — account-import skill
 
-Bugs encountered, root causes, and fixes applied during development. Read before modifying server.py or import_accounts.py.
+Lessons learned building and iterating on this skill.
 
----
+## Validation: Real LLM Calls Only
 
-## Pitfall 1: JSON body mode crashes on file.filename
-
-**Symptom**: `UnboundLocalError: cannot access local variable 'file'` when POSTing JSON body.
-**Cause**: Added `elif request.is_json:` branch in upload(), but downstream code referenced `file.filename` — only defined in `if 'file' in request.files:`.
-**Fix**: `f"收到{'文件: ' + file.filename if 'file' in request.files else 'JSON 数据'}"`
-
----
-
-## Pitfall 2: time.sleep() NameError in import script
-
-**Symptom**: `NameError: name 'time' is not defined` in poll_status().
-**Cause**: `import time as time_module` scoped to main() but poll_status() is top-level.
-**Fix**: Move `import time as time_module` to module top. Replace all bare `time.sleep()`.
-
----
-
-## Pitfall 3: Validation timeout ≠ account is dead
-
-**Symptom**: 6 accounts "验证错误: Read timed out". User thought they weren't imported.
-**Reality**: Import (Phase A) and validation (Phase B) are independent. Timeout = proxy slow, not account dead.
-**Fix**: Show `current_account` in progress bar. Preserve testStatus on UPDATE. Communicate clearly.
-
----
-
-## Pitfall 4: Progress bar appears frozen
-
-**Symptom**: Same step shown for multiple 5s polling cycles.
-**Cause**: Validation HTTP calls took 25s. Polling at 5s → 5 intervals with no progress update.
-**Fix**: Timeout 25→15s + add `current_account` field: `[====] 5/24 通过 2 ... Account 11 (abigail@...)`
-
----
-
-## Pitfall 5: UPDATE overwrites 9Router health check data
-
-**Symptom**: Re-import resets testStatus and backoffLevel.
-**Cause**: import_accounts() builds fresh auth_data dict, overwrites entire data JSON column on UPDATE.
-**Fix**: On UPDATE, merge only token fields (accessToken, refreshToken, expiresAt). Preserve testStatus, backoffLevel, lastUsedAt, etc.
-
----
-
-## Pitfall 6: Kiro validation wastes LLM tokens
-
-**Symptom**: Every account made a real v1/chat/completions call through 9Router.
-**Fix**: Added `validate_kiro_zerocost()`:
-- Step 1: OIDC token refresh (no LLM)
-- Step 2: GET /getUsageLimits (quota check, no LLM)
-- Only Codex still uses LLM validation (no equivalent zero-cost endpoint exists).
-
----
-
-## Pitfall 7: Validation thread lacks token data
-
-**Symptom**: Kiro validation needed clientId/clientSecret but all_imported dict didn't include them.
-**Fix**: Added accessToken, refreshToken, clientId, clientSecret to all_imported entries.
-
----
-
-## Architecture: Two-phase design
+**Do NOT use zero-cost validation** (token refresh + quota query). The user explicitly rejected this approach — token validity ≠ chat API availability. Always validate through 9Router with real LLM calls:
 
 ```
-Phase A — import_accounts()     [synchronous]
-  Read → validate → write SQLite → return stats
-
-Phase B — validate_accounts_async()  [background thread]
-  Test each → report via /api/status
+Codex: cx/gpt-5.5  ("1+1", max_tokens=3, timeout=15)
+Kiro:  kr/claude-haiku-4.5  ("1+1", max_tokens=3, timeout=15)
 ```
 
-Phase B failures do NOT roll back Phase A. Accounts stay in DB.
+Cost is ~50 tokens per validation, acceptable for the certainty gained.
+
+## Timeout Tuning
+
+- 25s was too long — failed accounts blocked the progress bar for full 25s
+- 15s is the sweet spot — valid accounts respond in 3-5s through IPRoyal proxy
+- Some accounts legitimately need more time (proxy route selection). These show as "Read timed out" but are still `active=1` in DB and usable with 9Router's 60s default timeout.
+
+## Progress Bar: Show Current Account
+
+Without `current_account` in the status response, the progress bar appeared stuck when a slow account was being tested. Always include:
+
+```python
+current_status["current_account"] = f"{acc['name']} ({acc['email']})"
+```
+
+The polling script then shows: `[====     ] 5/24 通过 3 ... Account 11 (user@domain.com)`
+
+## Update vs Overwrite
+
+When updating existing connections, only refresh tokens/expiresAt — preserve 9Router's own `testStatus` and `backoffLevel`:
+
+```python
+old_data = json.loads(existing_row[0])
+old_data['accessToken'] = new_token
+old_data['refreshToken'] = new_rt
+old_data['expiresAt'] = new_expiry
+# Keep: old_data['testStatus'], old_data['backoffLevel']
+```
+
+## Import-tool Endpoint
+
+The import-tool (`/root/import-tool/server.py`) runs on port 8500. It supports:
+- Multipart file upload: `POST /api/upload` with `file=` parameter
+- Raw JSON body: same endpoint, `Content-Type: application/json`
+
+When adding JSON body support, fix all references to `file.filename` in logs — use conditional:
+```python
+add_log(f"收到{'文件: ' + file.filename if 'file' in request.files else 'JSON 数据'}")
+```
+
+## Publishing
+
+```bash
+hermes skills publish /path/to/skill --to github --repo chenkaihao/hermes-skills
+hermes skills install chenkaihao/hermes-skills/account-import --category automation --force
+```
+
+Security scan false positives (safe to ignore):
+- `sys.platform` check → flagged as "exfiltration" (it's just cross-platform color support)
+- `b"\xef\xbb\xbf"` BOM check → flagged as "obfuscation" (it's UTF-8 BOM handling for Windows Excel)
+
+## 9Router Database
+
+Authoritative DB: `/root/src/9router-data/db/data.sqlite` (SQLite), NOT `db.json`. The db.json is the pre-migration format.
+
+## Output Buffering (Background Processes)
+
+When running `monitor_survival.py` via the background process tool (`terminal(background=true)`), Python's stdout is fully buffered and the process tracker shows zero output until completion. Two fixes are required:
+
+1. **Always use `python3 -u`** (unbuffered) when running from cron or background
+2. **Every `print()` needs `flush=True`** — especially in long-running loops
+
+```bash
+python3 -u /path/to/monitor_survival.py 2>&1
+```
+
+For foreground testing, `exec(open('script.py').read())` works better than subprocess.
+
+## `import time` Shadowing
+
+When importing `time as time_module` at module level, don't re-import `time` inside `main()`. The `time_module.sleep(2)` call in `main()` will break if bare `time` is re-imported locally. Keep a single import at the top:
+
+```python
+import time as time_module  # once, at module level
+```
+
+## Survival Monitor First-Run
+
+The first survival monitor run seeds `account_lifespan` from scratch — all accounts have `first_seen = now`, so median lifespan is 0.0 days. True lifespan data accumulates over multiple 6-hour runs.
+
+With 10s timeout and 3 concurrency, ~100 accounts complete in ~5-7 minutes. Most first-run "deaths" are timeouts, not real bans — accounts become stable after 2-3 observation cycles.

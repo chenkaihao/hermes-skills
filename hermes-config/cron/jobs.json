@@ -1,0 +1,91 @@
+{
+  "jobs": [
+    {
+      "id": "98718f87c50d",
+      "name": "Kiro+ChatGPT \u6279\u91cf\u81ea\u52a8\u6ce8\u518c",
+      "prompt": "",
+      "skills": [],
+      "skill": null,
+      "model": null,
+      "provider": null,
+      "base_url": null,
+      "script": "auto_register_batch.py",
+      "no_agent": true,
+      "context_from": null,
+      "schedule": {
+        "kind": "cron",
+        "expr": "*/5 * * * *",
+        "display": "*/5 * * * *"
+      },
+      "schedule_display": "*/5 * * * *",
+      "repeat": {
+        "times": null,
+        "completed": 36
+      },
+      "enabled": false,
+      "state": "paused",
+      "paused_at": "2026-05-12T15:26:00.149456+08:00",
+      "paused_reason": null,
+      "created_at": "2026-05-12T12:29:12.937066+08:00",
+      "next_run_at": "2026-05-12T15:30:00+08:00",
+      "last_run_at": "2026-05-12T15:27:20.327954+08:00",
+      "last_status": "error",
+      "last_error": "Script timed out after 120s: /root/.hermes/scripts/auto_register_batch.py",
+      "last_delivery_error": null,
+      "deliver": "local",
+      "origin": {
+        "platform": "feishu",
+        "chat_id": "oc_3ea8d2f540c8e91a1ff45c5d7f4765f2",
+        "chat_name": "oc_3ea8d2f540c8e91a1ff45c5d7f4765f2",
+        "thread_id": null
+      },
+      "enabled_toolsets": null,
+      "workdir": null
+    },
+    {
+      "id": "fb4cfeacc72a",
+      "name": "\u8d26\u53f7\u5b58\u6d3b\u89c2\u6d4b",
+      "prompt": "\u8fd0\u884c\u5b58\u6d3b\u89c2\u6d4b\u811a\u672c\uff1apython3 -u /root/.hermes/skills/automation/account-import/scripts/monitor_survival.py\u3002\u53ea\u9700\u8fd0\u884c\u811a\u672c\uff0c\u811a\u672c\u4f1a\u81ea\u5df1\u751f\u6210 HTML \u62a5\u8868\u5230 /var/www/html/report/survival.html\u3002\u4e0d\u9700\u8981\u989d\u5916\u7684\u5206\u6790\u6216\u603b\u7ed3\u3002",
+      "skills": [],
+      "skill": null,
+      "model": null,
+      "provider": null,
+      "base_url": null,
+      "script": null,
+      "no_agent": false,
+      "context_from": null,
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 */6 * * *",
+        "display": "0 */6 * * *"
+      },
+      "schedule_display": "0 */6 * * *",
+      "repeat": {
+        "times": null,
+        "completed": 31
+      },
+      "enabled": true,
+      "state": "scheduled",
+      "paused_at": null,
+      "paused_reason": null,
+      "created_at": "2026-05-20T16:40:58.268219+08:00",
+      "next_run_at": "2026-05-28T12:00:00+08:00",
+      "last_run_at": "2026-05-28T06:00:58.249392+08:00",
+      "last_status": "ok",
+      "last_error": null,
+      "last_delivery_error": null,
+      "deliver": "local",
+      "origin": {
+        "platform": "feishu",
+        "chat_id": "oc_3ea8d2f540c8e91a1ff45c5d7f4765f2",
+        "chat_name": "oc_3ea8d2f540c8e91a1ff45c5d7f4765f2",
+        "thread_id": null
+      },
+      "enabled_toolsets": [
+        "terminal"
+      ],
+      "workdir": null
+    }
+  ],
+  "updated_at": "2026-05-28T06:00:58.249890+08:00"
+}

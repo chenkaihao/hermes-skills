@@ -7,8 +7,8 @@ from pathlib import Path
 
 DB = "/root/src/9router-data/db/data.sqlite"
 REPORT = "/var/www/html/report/survival.html"
-API = "http://localhost:9000/v1/chat/completions"
-TIMEOUT = 10
+API = "http://localhost:3000/v1/chat/completions"  # New API routing (Docker). Port 9000 = Next.js UI only.
+TIMEOUT = 25
 CONCURRENCY = 3  # 并发验证数
 MODEL_MAP = {"codex": "cx/gpt-5.5", "kiro": "kr/claude-haiku-4.5"}
 
@@ -38,10 +38,10 @@ def load_accounts():
 
 def load_lifespan():
     conn = sqlite3.connect(DB)
-    rows = conn.execute("SELECT email, status, first_seen, last_alive, died_at, death_reason, check_count FROM account_lifespan").fetchall()
+    rows = conn.execute("SELECT email, provider, domain, status, first_seen, last_alive, died_at, death_reason, check_count FROM account_lifespan").fetchall()
     conn.close()
-    return {r[0]: {"status": r[1], "first_seen": r[2], "last_alive": r[3],
-                   "died_at": r[4], "death_reason": r[5], "check_count": r[6]} for r in rows}
+    return {r[0]: {"provider": r[1], "domain": r[2], "status": r[3], "first_seen": r[4], "last_alive": r[5],
+                   "died_at": r[6], "death_reason": r[7], "check_count": r[8]} for r in rows}
 
 
 def upsert_lifespan(email, provider, domain, alive, reason, now):
@@ -67,6 +67,22 @@ def upsert_lifespan(email, provider, domain, alive, reason, now):
 
 
 # ── 验证 ──────────────────────────────────────────────
+def get_9router_health(email):
+    """回查 9router 健康状态，获取真实封号原因"""
+    try:
+        conn = sqlite3.connect(DB)
+        row = conn.execute(
+            "SELECT json_extract(data, '$.testStatus'), json_extract(data, '$.lastError') FROM providerConnections WHERE email=?",
+            (email,)).fetchone()
+        conn.close()
+        if row:
+            status, err = row
+            if status == "unavailable" and err:
+                return err
+    except:
+        pass
+    return None
+
 def check_one(acc):
     model = MODEL_MAP.get(acc["provider"], "cx/gpt-5.5")
     try:
@@ -79,6 +95,10 @@ def check_one(acc):
             msg = r.json().get("error", {}).get("message", f"HTTP {r.status_code}")[:100]
             return False, classify_death(msg)
     except Exception as e:
+        # 超时/连接失败时回查 9router 健康状态
+        health_err = get_9router_health(acc["email"])
+        if health_err:
+            return False, classify_death(health_err)
         return False, classify_death(str(e))
 
 
@@ -382,4 +402,17 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if "--report-only" in sys.argv:
+        lifespan = load_lifespan()
+        from datetime import datetime
+        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        stats = compute_stats(lifespan, now_str)
+        print(f"  存活: {stats['alive']}  死亡: {stats['dead']}  中位寿命: {stats['median_lifespan_d']}d", flush=True)
+        html = render_html(stats, now_str + " UTC CST")
+        Path(REPORT).parent.mkdir(parents=True, exist_ok=True)
+        with open(REPORT, "w", encoding="utf-8") as f:
+            f.write(html)
+        print(f"  报表: {REPORT}")
+    else:
+        main()
